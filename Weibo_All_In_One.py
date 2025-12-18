@@ -54,7 +54,8 @@ class WeiboAssistantApp:
         self.load_cookies()
 
     def setup_icon(self):
-        icon_path = "微博发送模板.ico"
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        icon_path = os.path.join(current_dir, "微博发送模板.ico")
         if os.path.exists(icon_path):
             try:
                 self.root.iconbitmap(icon_path)
@@ -87,7 +88,7 @@ class WeiboAssistantApp:
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
             "Connection": "keep-alive",
             "MWeibo-Pwa": "1",
-            "Referer": "https://m.weibo.cn/p/index?containerid=100803_-_followsuper",
+            "Referer": "https://weibo.com/",
             "Sec-Fetch-Dest": "empty",
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "same-origin",
@@ -471,33 +472,98 @@ class WeiboAssistantApp:
         self.refresh_image_preview()
         self.log_sender("已清空所有图片")
 
-    def upload_single_image(self, file_path):
+    def get_mobile_stoken(self):
         try:
-            url = "https://www.weibo.com/ajax/statuses/uploadPicture"
-            
+            url = "https://m.weibo.cn/api/config"
             headers = {
-                "accept": "application/json, text/plain, */*",
-                "origin": "https://www.weibo.com",
-                "referer": "https://www.weibo.com",
-                "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-                "x-requested-with": "XMLHttpRequest",
-                "x-xsrf-token": self.xsrf_token
+                "User-Agent": "Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.91 Mobile Safari/537.36",
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": "https://m.weibo.cn/"
             }
-            
-            files = {
-                'pic': ('image.png', open(file_path, 'rb'), 'image/png')
-            }
-            
-            response = requests.post(url, headers=headers, cookies=self.cookies, files=files)
-            
+            response = requests.get(url, headers=headers, cookies=self.cookies, timeout=10)
             if response.status_code == 200:
                 data = response.json()
-                if 'pic_id' in data:
-                    return data['pic_id']
-                elif 'data' in data and 'pic_id' in data['data']:
-                    return data['data']['pic_id']
+                if 'data' in data and 'st' in data['data']:
+                    return data['data']['st']
+        except Exception as e:
+            self.log_sender(f"获取Mobile Token失败: {e}")
+        return None
+
+    def upload_single_image(self, file_path):
+        try:
+            # 1. 尝试使用 m.weibo.cn 移动端接口 (兼容移动端Cookie)
+            stoken = self.get_mobile_stoken()
+            if stoken:
+                url = "https://m.weibo.cn/api/statuses/uploadPic"
+                headers = {
+                    "X-XSRF-TOKEN": stoken,
+                    "Origin": "https://m.weibo.cn",
+                    "Referer": "https://m.weibo.cn/compose",
+                    "User-Agent": "Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.91 Mobile Safari/537.36",
+                    "X-Requested-With": "XMLHttpRequest"
+                }
                 
-            self.log_sender(f"图片上传失败 ({os.path.basename(file_path)}): {response.text}")
+                with open(file_path, 'rb') as f:
+                    img_data = f.read()
+                
+                files = {
+                    'pic': (os.path.basename(file_path), img_data, 'image/jpeg')
+                }
+                data_post = {'st': stoken}
+                
+                response = requests.post(url, headers=headers, cookies=self.cookies, files=files, data=data_post, timeout=30)
+                
+                if response.status_code == 200:
+                    try:
+                        data = response.json()
+                        if 'pic_id' in data:
+                            return data['pic_id']
+                    except:
+                        pass
+                else:
+                    self.log_sender(f"移动端上传失败: {response.status_code} - {response.text[:50]}")
+
+            # 2. 如果移动端失败，尝试使用 weibo.com 新版接口 (备用)
+            url = "https://weibo.com/ajax/statuses/uploadPicture"
+            
+            headers = {
+                "X-XSRF-TOKEN": self.xsrf_token,
+                "Origin": "https://weibo.com",
+                "Referer": "https://weibo.com/",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "X-Requested-With": "XMLHttpRequest"
+            }
+            
+            # 读取图片
+            with open(file_path, 'rb') as f:
+                img_data = f.read()
+            
+            # 构建 multipart/form-data
+            # 注意：Weibo 接口通常只需要 'pic' 字段
+            files = {
+                'pic': (os.path.basename(file_path), img_data, 'image/jpeg')
+            }
+            
+            # 增加 timeout 防止长时间挂起
+            response = requests.post(url, headers=headers, cookies=self.cookies, files=files, timeout=30)
+            
+            if response.status_code == 200:
+                # 尝试解析 JSON
+                try:
+                    data = response.json()
+                    if 'pic_id' in data:
+                        return data['pic_id']
+                except:
+                    pass
+                    
+                # 如果 JSON 解析失败，尝试正则提取
+                import re
+                content = response.text
+                match = re.search(r'"pic_id"\s*:\s*"(\w+)"', content)
+                if match:
+                    return match.group(1)
+            
+            self.log_sender(f"图片上传失败 ({os.path.basename(file_path)}): {response.text[:100]}...")
             return None
             
         except Exception as e:
@@ -506,7 +572,7 @@ class WeiboAssistantApp:
 
     def upload_images(self):
         if not self.image_paths:
-            return ""
+            return []
             
         uploaded_ids = []
         total = len(self.image_paths)
@@ -522,10 +588,10 @@ class WeiboAssistantApp:
                 self.log_sender(f"第 {i+1} 张图片上传失败，已跳过")
                 
         if not uploaded_ids:
-            return None
+            return []
             
         self.log_sender(f"成功上传 {len(uploaded_ids)}/{total} 张图片")
-        return ",".join(uploaded_ids)
+        return uploaded_ids
 
     def send_weibo(self):
         content = self.content_text.get("1.0", tk.END).strip()
@@ -538,13 +604,24 @@ class WeiboAssistantApp:
 
     def _send_thread(self, content):
         try:
-            pic_id_str = ""
+            pic_id_data = ""
             if self.image_paths:
-                pic_id_str = self.upload_images()
-                if not pic_id_str and self.image_paths:
+                uploaded_ids = self.upload_images()
+                if not uploaded_ids and self.image_paths:
                     self.root.after(0, lambda: messagebox.showerror("错误", "图片上传失败，终止发送"))
                     self.root.after(0, lambda: self.send_btn.config(state="normal"))
                     return
+                
+                # 构建 pic_id JSON 结构
+                # 格式参考: [{"type":"image/png","pid":"..."}]
+                if uploaded_ids:
+                    pic_list = []
+                    for pid in uploaded_ids:
+                        pic_list.append({
+                            "type": "image/jpeg",  # 默认使用 jpeg，实际上传也是 jpeg MIME
+                            "pid": pid
+                        })
+                    pic_id_data = json.dumps(pic_list)
 
             url = "https://www.weibo.com/ajax/statuses/update"
             
@@ -564,7 +641,7 @@ class WeiboAssistantApp:
                 "share_id": "",
                 "vote": "",
                 "media": "",
-                "pic_id": pic_id_str,
+                "pic_id": pic_id_data,
                 "lat": "0",
                 "long": "0",
                 "pub_type": "0",
@@ -702,7 +779,8 @@ class WeiboAssistantApp:
             try:
                 qr_selectors = [
                     "img[src*='qr']", ".qrcode img", "#qrcode img", 
-                    "img[alt*='二维码']", "img[alt*='QR']", ".W_login_qrcode img"
+                    "img[alt*='二维码']", "img[alt*='QR']", ".W_login_qrcode img",
+                    "img[class*='QRCode']"
                 ]
                 
                 qr_element = None
@@ -739,7 +817,7 @@ class WeiboAssistantApp:
         self._show_manual_login_info()
 
     def _show_manual_login_info(self):
-        login_url = "https://passport.weibo.com/sso/signin?entry=wapsso&source=wapssowb&url=https%3A%2F%2Fm.weibo.cn%2Fp%2Ftabbar%3Fcontainerid%3D100803_-_recentvisit"
+        login_url = "https://weibo.com/newlogin?tabtype=weibo&gid=102803&url=https%3A%2F%2Fweibo.com%2F"
         info_text = f"请在浏览器中打开以下链接进行登录:\n\n{login_url}\n\n登录完成后，点击'手动检查登录'按钮"
         
         self.root.after(0, lambda: self.qr_label.config(text=info_text, image=''))
@@ -780,7 +858,14 @@ class WeiboAssistantApp:
             try:
                 if self.driver:
                     current_url = self.driver.current_url
-                    if 'm.weibo.cn' in current_url and 'passport.weibo.com' not in current_url:
+                    # 检查是否跳转到了weibo.com首页或m.weibo.cn，且不是登录页
+                    is_logged_in = False
+                    if 'weibo.com' in current_url and 'login' not in current_url and 'passport' not in current_url:
+                        is_logged_in = True
+                    elif 'm.weibo.cn' in current_url and 'passport' not in current_url:
+                        is_logged_in = True
+                        
+                    if is_logged_in:
                         cookies = self.driver.get_cookies()
                         self.cookies = {cookie['name']: cookie['value'] for cookie in cookies}
                         self.session.cookies.update(self.cookies)
