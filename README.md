@@ -1,3 +1,7 @@
+<img width="910" height="791" alt="image" src="https://github.com/user-attachments/assets/87aaf7f1-bb95-4e1f-a8e3-264e6bd47de3" />
+<img width="910" height="791" alt="image" src="https://github.com/user-attachments/assets/cd3b19ae-1c5d-4cdb-9387-369b5fdf0d4d" />
+
+
 # 微博发送器项目文档
 
 ## 项目简介
